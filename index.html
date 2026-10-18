@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operation Boyd Orr</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="assets/leaflet.css">
+
+  <!--
+    Surveillance-desk console, after the Bloomberg Terminal recipe:
+    hairline-divided panes, one monospace face, square corners, no shadows,
+    instant state changes. Amber = mastermind and meetings, red = rule
+    breaking, green = live / on campus. Hair colours are data, used only to
+    identify people.
+  -->
+  <style>
+    :root {
+      --bg: #0A0E1A;
+      --surface-1: #11172A;
+      --surface-2: #1A2138;
+      --line: #2A3050;
+      --text: #E8ECF4;
+      --text-2: #A3ABC2;      /* derived between --text and --muted for secondary copy */
+      --muted: #5E6680;
+      --amber: #FFA02F;
+      --red: #F23645;
+      --green: #00B96B;
+
+      --font: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --left-w: 340px;
+      --log-w: 340px;
+      --tag-w: 34px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.45;
+      font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; text-align: left; }
+    :focus-visible { outline: 1px solid var(--amber); outline-offset: 1px; }
+    kbd {
+      display: inline-block;
+      min-width: 18px;
+      padding: 0 4px;
+      font: inherit;
+      font-size: 10px;
+      line-height: 16px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+
+    .label { font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .green { color: var(--green); }
+
+    /* ---------------------------------------------------------- frame */
+
+    .console {
+      display: grid;
+      grid-template-columns: var(--left-w) 1fr var(--log-w);
+      grid-template-rows: 30px minmax(0, 1fr) auto;
+      grid-template-areas:
+        "status status status"
+        "left   map    log"
+        "strip  strip  strip";
+      height: 100%;
+    }
+
+    /* ----------------------------------------------------- status bar */
+
+    .statusbar {
+      grid-area: status;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      white-space: nowrap;
+      background: var(--surface-1);
+      border-bottom: 1px solid var(--line);
+    }
+    .statusbar > * { padding: 0 14px; border-right: 1px solid var(--line); line-height: 29px; }
+    .statusbar .brand { font-weight: 600; letter-spacing: 0.08em; color: var(--amber); }
+    .statusbar .stat .label { margin-right: 8px; }
+    .statusbar .spacer { flex-grow: 1; border-right: none; }
+    .statusbar .mode { border-right: none; border-left: 1px solid var(--line); font-weight: 600; letter-spacing: 0.08em; }
+    .mode.live { color: var(--green); }
+    .mode.paused { color: var(--muted); }
+
+    /* --------------------------------------------------------- panes */
+
+    .pane {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg);
+    }
+    .pane-left { grid-area: left; border-right: 1px solid var(--line); }
+    .pane-log { grid-area: log; border-left: 1px solid var(--line); }
+
+    .pane-head {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 32px;
+      padding: 0 12px;
+      background: var(--surface-1);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .pane-body {
+      flex-grow: 1;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line) transparent;
+    }
+
+    .tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); background: var(--surface-1); }
+    .tab {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 32px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-right: 1px solid var(--line);
+    }
+    .tab:last-child { border-right: none; }
+    .tab:hover { color: var(--text); }
+    .tab[aria-selected="true"] { color: var(--bg); background: var(--amber); }
+    .tab[aria-selected="true"] kbd { color: var(--bg); border-color: var(--bg); }
+
+    .view { padding: 0 0 16px; }
+    .view[hidden] { display: none; }
+
+    /* Section rule: "TITLE ───────" */
+    .sect {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 16px 12px 6px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .sect::after { content: ""; flex-grow: 1; height: 1px; background: var(--line); }
+
+    .kv { display: grid; grid-template-columns: 144px 1fr; gap: 12px; padding: 3px 12px; }
+    .kv dt { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; padding-top: 1px; }
+    .kv dd { color: var(--text); text-wrap: pretty; }
+    .kv dd.num { text-align: right; }
+
+    .para { padding: 4px 12px; color: var(--text-2); text-wrap: pretty; }
+    .para strong { color: var(--text); font-weight: 600; }
+    .para strong.amber { color: var(--amber); }
+
+    .line-item { display: grid; grid-template-columns: 22px 1fr; padding: 3px 12px; color: var(--text-2); text-wrap: pretty; }
+    .line-item .mark { color: var(--muted); }
+    .line-item.flag .mark { color: var(--red); }
+
+    .swatch { display: inline-block; width: 8px; height: 8px; vertical-align: 1px; }
+
+    /* Clickable data rows (meetings, movements, commands). */
+    .row-btn {
+      display: grid;
+      grid-template-columns: 96px 1fr auto;
+      gap: 8px;
+      width: 100%;
+      padding: 5px 12px;
+      color: var(--text-2);
+    }
+    .row-btn:hover { background: var(--surface-2); color: var(--text); }
+    .row-btn:active { background: var(--amber); color: var(--bg); }
+    .row-btn .time { color: var(--text); }
+    .row-btn .sub { display: block; font-size: 11px; color: var(--muted); }
+    .row-btn .go { color: var(--muted); }
+    .row-btn.meet .time { color: var(--amber); }
+    .row-btn .time.amber { color: var(--amber); }
+
+    .cmd { grid-template-columns: 44px 1fr auto; align-items: center; }
+    .cmd kbd { justify-self: start; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 30px;
+      padding: 0 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--amber);
+      border: 1px solid var(--amber);
+    }
+    .btn:hover { color: var(--bg); background: var(--amber); }
+    .btn:hover kbd { color: var(--bg); border-color: var(--bg); }
+    .btn kbd { color: var(--amber); border-color: var(--amber); }
+    .btn-row { padding: 16px 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* Two- or four-way switch: [DARK|LIGHT] */
+    .seg { display: inline-flex; border: 1px solid var(--line); }
+    .seg button { padding: 1px 8px; white-space: nowrap; font-size: 11px; font-weight: 500; letter-spacing: 0.06em; color: var(--muted); }
+    .seg button + button { border-left: 1px solid var(--line); }
+    .seg button:hover { color: var(--text); }
+    .seg button[aria-pressed="true"] { color: var(--bg); background: var(--text); }
+    .setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 12px; }
+    .setting .label { color: var(--text-2); }
+
+    /* ------------------------------------------------------- suspects */
+
+    .table-head, .suspect {
+      display: grid;
+      grid-template-columns: 12px 1fr 30px 46px;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+    }
+    .table-head { height: 26px; border-bottom: 1px solid var(--line); }
+    .table-head span:nth-child(3) { text-align: right; }
+
+    .suspect { min-height: 46px; border-bottom: 1px solid var(--line); }
+    .suspect:hover { background: var(--surface-1); }
+    .suspect.following { background: var(--surface-2); }
+    .suspect .cursor { font-size: 9px; color: var(--amber); visibility: hidden; }
+    .suspect.following .cursor { visibility: visible; }
+    .suspect-main { display: block; min-width: 0; padding: 6px 0; }
+    .suspect-name { display: block; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
+    .suspect.following .suspect-name { color: var(--amber); }
+    .suspect-at { display: block; overflow: hidden; font-size: 11px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; text-transform: uppercase; }
+    .suspect-at.on { color: var(--text-2); }
+    .role-tag { font-size: 11px; font-weight: 600; text-align: right; color: var(--red); }
+    .role-tag.mm { color: var(--amber); }
+    .file-link { height: 24px; font-size: 11px; font-weight: 500; text-align: center; color: var(--muted); border: 1px solid var(--line); }
+    .file-link:hover { color: var(--bg); background: var(--text); border-color: var(--text); }
+
+    .hint { padding: 12px; font-size: 11px; color: var(--muted); text-wrap: pretty; }
+
+    /* ----------------------------------------------------------- file */
+
+    .file-head { padding: 14px 12px 4px; }
+    .file-nav { display: flex; align-items: center; justify-content: space-between; }
+    .file-nav .seg button { padding: 1px 10px; }
+    .file-name { margin-top: 10px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+    .file-meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    .badge { padding: 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--bg); background: var(--red); }
+    .badge.mm { background: var(--amber); }
+    .file-now { margin-top: 6px; font-size: 11px; text-transform: uppercase; color: var(--text-2); }
+    .file-now .label { margin-right: 6px; }
+
+    .empty { padding: 32px 12px 0; color: var(--muted); text-wrap: pretty; }
+    .empty strong { display: block; margin-bottom: 6px; font-weight: 600; color: var(--text-2); }
+
+    /* ------------------------------------------------------------ map */
+
+    .map-wrap { grid-area: map; position: relative; min-width: 0; min-height: 0; }
+    #map { position: absolute; inset: 0; background: var(--bg); }
+    #map.basemap-dark .leaflet-tile-pane { filter: grayscale(1) sepia(1) hue-rotate(185deg) saturate(1.8) brightness(0.6) contrast(1.15); }
+    #map.basemap-light .leaflet-tile-pane { filter: grayscale(1) contrast(1.05); }
+
+    .map-hud {
+      position: absolute;
+      z-index: 1000;
+      display: flex;
+      font-size: 11px;
+      pointer-events: none;
+      background: var(--bg);
+      border: 1px solid var(--line);
+    }
+    .map-hud > span { padding: 2px 8px; }
+    .map-hud > span + span { border-left: 1px solid var(--line); }
+    .hud-top { top: 10px; left: 10px; }
+    .hud-bottom { bottom: 10px; left: 10px; color: var(--muted); }
+
+    .bldg { position: relative; width: 0; height: 0; }
+    .bldg-dot { position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; background: var(--text-2); }
+    .bldg.target .bldg-dot { left: -4px; top: -4px; width: 8px; height: 8px; background: var(--amber); outline: 1px solid var(--amber); outline-offset: 3px; }
+    .bldg-name {
+      position: absolute;
+      left: 8px;
+      top: -7px;
+      font-family: var(--font);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      color: var(--text-2);
+      text-shadow: 0 0 2px var(--bg), 0 0 4px var(--bg), 0 0 6px var(--bg);
+      pointer-events: none;
+    }
+    .bldg.target .bldg-name { left: 11px; color: var(--amber); font-weight: 600; }
+    #map.basemap-light .bldg-name { color: var(--bg); text-shadow: 0 0 2px #fff, 0 0 4px #fff, 0 0 6px #fff; }
+    #map.basemap-light .bldg:not(.target) .bldg-dot { background: var(--bg); }
+    #map.no-labels .bldg-name { display: none; }
+
+    .pin { position: relative; width: 12px; height: 12px; }
+    .pin-dot { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 2.5px var(--text); }
+    .pin.mm .pin-dot { box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px var(--amber); }
+    .pin-tag {
+      position: absolute;
+      left: 16px;
+      top: -1px;
+      padding: 0 3px;
+      font-family: var(--font);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 14px;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--line);
+    }
+    .pin.mm .pin-tag { color: var(--amber); }
+    .pin.following .pin-tag { color: var(--bg); background: var(--amber); border-color: var(--amber); }
+    #map.no-tags .pin-tag { display: none; }
+
+    .leaflet-container { font-family: var(--font); }
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip, .leaflet-tooltip {
+      color: var(--text);
+      background: var(--surface-1);
+      border: 1px solid var(--line);
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .leaflet-popup-content { margin: 10px 12px; font-size: 12px; line-height: 1.5; }
+    .leaflet-tooltip { font-size: 11px; }
+    .leaflet-tooltip-top::before { border-top-color: var(--line); }
+    .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+    .leaflet-container .leaflet-control-attribution { font-size: 10px; color: var(--muted); background: var(--bg); }
+    .leaflet-container .leaflet-control-attribution a { color: var(--text-2); }
+
+    /* ------------------------------------------------------------ log */
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 44px 36px 1fr;
+      gap: 0 8px;
+      width: 100%;
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .log-row:hover { background: var(--surface-1); }
+    .log-row.new { animation: flash 160ms steps(1, end); }
+    @keyframes flash { from { color: var(--bg); background: var(--amber); } to { background: transparent; } }
+    .log-time { color: var(--text-2); }
+    .log-type { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; padding-top: 1px; }
+    .log-row.flag .log-type { color: var(--red); }
+    .log-row.meeting .log-type { color: var(--amber); }
+    .log-title { font-weight: 600; text-transform: uppercase; }
+    .log-detail { grid-column: 3; font-size: 12px; color: var(--muted); text-wrap: pretty; }
+
+    /* ---------------------------------------------------------- strip */
+
+    .strip {
+      grid-area: strip;
+      display: grid;
+      grid-template-columns: var(--left-w) 1fr;
+      background: var(--surface-1);
+      border-top: 1px solid var(--line);
+    }
+
+    .transport {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      grid-template-rows: auto auto;
+      gap: 10px 12px;
+      align-content: center;
+      padding: 10px 12px;
+      border-right: 1px solid var(--line);
+    }
+    .btn-play {
+      grid-row: span 2;
+      display: grid;
+      place-items: center;
+      width: 52px;
+      height: 52px;
+      color: var(--bg);
+      background: var(--amber);
+    }
+    .btn-play:hover { background: var(--text); }
+    .btn-play svg { width: 16px; height: 16px; fill: currentColor; }
+    .clock { font-size: 24px; font-weight: 500; line-height: 1; letter-spacing: -0.02em; }
+    .transport-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+
+    .lanes { position: relative; padding: 8px 12px 6px; min-width: 0; }
+    .lane { display: grid; grid-template-columns: var(--tag-w) 1fr; align-items: center; gap: 8px; height: 11px; }
+    .lane + .lane { margin-top: 2px; }
+    .lane-tag { font-size: 10px; font-weight: 600; line-height: 11px; color: var(--muted); }
+    .lane.mm .lane-tag { color: var(--amber); }
+    .lane.following .lane-tag { color: var(--bg); background: var(--amber); padding: 0 2px; }
+    .lane-track { position: relative; height: 100%; background: var(--bg); }
+    .lane-track i { position: absolute; top: 0; bottom: 0; }
+    .lane-track .seg-on { top: 3px; bottom: 3px; background: color-mix(in oklch, var(--text-2) 40%, transparent); }
+    .lane.mm .seg-on { background: color-mix(in oklch, var(--amber) 45%, transparent); }
+    .lane.following .seg-on { top: 2px; bottom: 2px; background: var(--lane-color); }
+    .lane-track .m-flag { width: 2px; background: var(--red); }
+    .lane-track .m-meet { width: 2px; background: var(--amber); }
+
+    /* The scrubber is a transparent native range laid over the tracks, so
+       click, drag and keyboard all work without a custom slider. */
+    .scrub-area { position: absolute; top: 8px; bottom: 24px; left: calc(12px + var(--tag-w) + 8px); right: 12px; }
+    .scrub-area:has(input:focus-visible) { outline: 1px solid var(--amber); outline-offset: 2px; }
+    #scrubber {
+      -webkit-appearance: none;
+      appearance: none;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      opacity: 0;
+      cursor: ew-resize;
+    }
+    #scrubber::-webkit-slider-thumb { -webkit-appearance: none; width: 1px; height: 100px; }
+    #scrubber::-moz-range-thumb { width: 1px; height: 100px; border: none; }
+    .playhead { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--amber); pointer-events: none; }
+    .playhead::before { content: ""; position: absolute; top: 0; left: -3px; border: 3px solid transparent; border-top: 4px solid var(--amber); }
+
+    .axis { position: relative; height: 14px; margin: 4px 0 0 calc(var(--tag-w) + 8px); }
+    .axis span { position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted); }
+    .axis span:first-child { transform: none; }
+    .axis span:last-child { transform: translateX(-100%); }
+
+    /* -------------------------------------------------------- summary */
+
+    #findings {
+      width: min(860px, calc(100% - 32px));
+      max-height: 85vh;
+      margin: auto;
+      padding: 0;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--line);
+    }
+    #findings::backdrop { background: rgba(10, 14, 26, 0.8); }
+    .dialog-head { display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 16px; background: var(--surface-1); border-bottom: 1px solid var(--line); }
+    #findings-intro { padding: 16px 16px 8px; max-width: 72ch; color: var(--text-2); text-wrap: pretty; }
+    .findings-table { width: 100%; border-collapse: collapse; }
+    .findings-table th { padding: 8px 16px 8px 0; font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-align: left; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+    .findings-table th:first-child, .findings-table td:first-child { padding-left: 16px; }
+    .findings-table td { padding: 10px 16px 10px 0; vertical-align: top; border-bottom: 1px solid var(--line); }
+    .findings-table td:first-child { white-space: nowrap; font-weight: 600; }
+    .findings-table .evidence { color: var(--text-2); font-size: 12px; }
+    .findings-table .evidence div + div { margin-top: 4px; }
+    .dialog-foot { display: flex; justify-content: flex-end; padding: 12px 16px; }
+
+    /* ---------------------------------------------------- responsive */
+
+    @media (max-width: 1280px) {
+      :root { --left-w: 300px; --log-w: 300px; }
+      .stat-oncampus, .stat-keys { display: none; }
+    }
+    /* Narrow screens: stack the panes and let the page scroll. */
+    @media (max-width: 960px) {
+      html, body { height: auto; overflow: auto; }
+      .console {
+        height: auto;
+        grid-template-columns: 1fr;
+        grid-template-rows: 30px 55vh auto auto auto;
+        grid-template-areas: "status" "map" "strip" "left" "log";
+      }
+      .pane-left, .pane-log { height: 480px; border: none; border-top: 1px solid var(--line); }
+      .strip { grid-template-columns: 1fr; }
+      .transport { border-right: none; border-bottom: 1px solid var(--line); }
+      .statusbar .stat:not(.stat-time) { display: none; }
+      .findings-table th:nth-child(3), .findings-table td:nth-child(3) { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="console">
+
+    <header class="statusbar">
+      <span class="brand">OPERATION BOYD ORR</span>
+      <span class="stat stat-time"><span class="label">Replay</span><span id="status-clock">--:--</span></span>
+      <span class="stat"><span class="label">Speed</span><span id="status-speed"></span></span>
+      <span class="stat"><span class="label">Flags</span><span class="red" id="status-flags"></span></span>
+      <span class="stat"><span class="label">Meetings</span><span class="amber" id="status-meetings"></span></span>
+      <span class="stat stat-oncampus"><span class="label">On campus</span><span class="green" id="status-oncampus"></span></span>
+      <span class="spacer"></span>
+      <span class="stat stat-keys label"><kbd>SPACE</kbd> play &nbsp;<kbd>&larr;</kbd><kbd>&rarr;</kbd> event &nbsp;<kbd>1</kbd>&ndash;<kbd>4</kbd> tabs</span>
+      <span class="mode live" id="status-mode">&#9679; LIVE</span>
+    </header>
+
+    <!-- ---------------------------------------------------- left pane -->
+    <section class="pane pane-left" aria-label="Investigation">
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <button class="tab" role="tab" data-tab="suspects" aria-selected="false"><kbd>1</kbd>SUSPECTS</button>
+        <button class="tab" role="tab" data-tab="file" aria-selected="false"><kbd>2</kbd>FILE</button>
+        <button class="tab" role="tab" data-tab="map" aria-selected="false"><kbd>3</kbd>MAP</button>
+        <button class="tab" role="tab" data-tab="case" aria-selected="false"><kbd>4</kbd>CASE</button>
+      </nav>
+      <div class="pane-body" id="left-body">
+        <div class="view" id="view-suspects" hidden></div>
+        <div class="view" id="view-file" hidden></div>
+        <div class="view" id="view-map" hidden>
+          <h3 class="sect">Camera</h3>
+          <button class="row-btn cmd" id="btn-target"><kbd>B</kbd><span>Show Boyd Orr</span><span class="go">&rsaquo;</span></button>
+          <button class="row-btn cmd" id="btn-fit"><kbd>A</kbd><span>Fit all suspects</span><span class="go">&rsaquo;</span></button>
+          <button class="row-btn cmd" id="btn-unfollow"><kbd>ESC</kbd><span>Stop following</span><span class="go">&rsaquo;</span></button>
+          <h3 class="sect">Layers</h3>
+          <div class="setting"><span class="label">Basemap</span>
+            <span class="seg" role="group" aria-label="Basemap"><button data-basemap="dark">DARK</button><button data-basemap="light">LIGHT</button></span></div>
+          <div class="setting"><span class="label">Building names</span>
+            <span class="seg" role="group" aria-label="Building names"><button data-layer="labels" data-on="true" aria-pressed="true">ON</button><button data-layer="labels" data-on="false">OFF</button></span></div>
+          <div class="setting"><span class="label">Suspect tags</span>
+            <span class="seg" role="group" aria-label="Suspect tags"><button data-layer="tags" data-on="true" aria-pressed="true">ON</button><button data-layer="tags" data-on="false">OFF</button></span></div>
+          <div class="setting"><span class="label">Walking routes</span>
+            <span class="seg" role="group" aria-label="Walking routes"><button data-layer="routes" data-on="true">ON</button><button data-layer="routes" data-on="false" aria-pressed="true">OFF</button></span></div>
+          <h3 class="sect">Replay</h3>
+          <div class="setting"><span class="label">Sim. min / sec</span><span class="seg" id="left-speeds" role="group" aria-label="Replay speed"></span></div>
+        </div>
+        <div class="view" id="view-case" hidden></div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- map -->
+    <div class="map-wrap">
+      <div id="map" aria-label="Campus map"></div>
+      <div class="map-hud hud-top" aria-hidden="true">
+        <span class="label">Following</span><span id="hud-following">&mdash;</span>
+      </div>
+      <div class="map-hud hud-bottom" aria-hidden="true"><span id="hud-coords">CURSOR &mdash;</span></div>
+    </div>
+
+    <!-- ---------------------------------------------------------- log -->
+    <aside class="pane pane-log" aria-labelledby="log-heading">
+      <div class="pane-head">
+        <h2 class="label" id="log-heading">Event log</h2>
+        <span class="label" id="event-count"></span>
+      </div>
+      <div class="pane-body" id="event-list" aria-live="polite"></div>
+    </aside>
+
+    <!-- -------------------------------------------------------- strip -->
+    <div class="strip" role="group" aria-label="Replay controls">
+      <div class="transport">
+        <button class="btn-play" id="btn-play" aria-label="Pause"></button>
+        <span class="clock" id="clock">--:--</span>
+        <div class="transport-row">
+          <span class="seg" id="speeds" role="group" aria-label="Playback speed"></span>
+          <span class="seg" role="group" aria-label="Step between events">
+            <button id="btn-prev" title="Previous event (&larr;)">&lsaquo; EV</button><button id="btn-next" title="Next event (&rarr;)">EV &rsaquo;</button>
+          </span>
+        </div>
+      </div>
+      <div class="lanes">
+        <div id="lanes"></div>
+        <div class="axis" id="ticks"></div>
+        <div class="scrub-area">
+          <div class="playhead" id="playhead"></div>
+          <input type="range" id="scrubber" aria-label="Time of day">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="findings" aria-labelledby="findings-title">
+    <div class="dialog-head">
+      <h2 class="label amber" id="findings-title">Case summary</h2>
+      <form method="dialog"><button class="label">[ESC] Close</button></form>
+    </div>
+    <p id="findings-intro"></p>
+    <table class="findings-table">
+      <thead>
+        <tr><th>Name</th><th>Role</th><th>Subject</th><th>Age</th><th>Evidence</th></tr>
+      </thead>
+      <tbody id="findings-rows"></tbody>
+    </table>
+    <div class="dialog-foot">
+      <form method="dialog"><button class="btn">Close</button></form>
+    </div>
+  </dialog>
+
+  <script src="assets/leaflet.js"></script>
+  <script>
+    const CASE = {"stats": {"students": 163, "conspirators": 6}, "center": [55.872406014285716, -4.288600371428571], "timeline": {"start": 420, "end": 1560}, "buildings": {"Boyd Orr Building": {"name": "Boyd Orr Building", "lat": 55.8735737, "lon": -4.2926741, "hours": "0800-2100", "is_target": true}, "James Watt Building": {"name": "James Watt Building", "lat": 55.8708995, "lon": -4.2872286, "hours": "0900-1700", "is_target": false}, "Adam Smith Building": {"name": "Adam Smith Building", "lat": 55.8737694, "lon": -4.2900032, "hours": "0900-1700", "is_target": false}, "Main Building": {"name": "Main Building", "lat": 55.871843, "lon": -4.288341, "hours": "0900-1700", "is_target": false}, "Wolfson Medical Building": {"name": "Wolfson Medical Building", "lat": 55.8729374, "lon": -4.293249, "hours": "0900-1700", "is_target": false}, "Glasgow University Union": {"name": "Glasgow University Union", "lat": 55.8725047, "lon": -4.2849708, "hours": "0900-2300", "is_target": false}, "The Hive": {"name": "The Hive", "lat": 55.872865, "lon": -4.284643, "hours": "2200-0200", "is_target": false}, "Sir Alwyn Williams Building": {"name": "Sir Alwyn Williams Building", "lat": 55.8739703, "lon": -4.2919055, "hours": "0900-1700", "is_target": false}, "Library": {"name": "Library", "lat": 55.8733888, "lon": -4.289028, "hours": "0700-0200", "is_target": false}, "Queen Margaret Union": {"name": "Queen Margaret Union", "lat": 55.8736412, "lon": -4.2915321, "hours": "0800-2300", "is_target": false}, "St Andrews Building": {"name": "St Andrews Building", "lat": 55.8716388, "lon": -4.2796039, "hours": "0900-1700", "is_target": false}, "Kelvingrove Park": {"name": "Kelvingrove Park", "lat": 55.8690076, "lon": -4.2823603, "hours": "24 hours", "is_target": false}, "Joseph Black Building": {"name": "Joseph Black Building", "lat": 55.8720857, "lon": -4.293137, "hours": "0900-1700", "is_target": false}, "Kelvin Building": {"name": "Kelvin Building", "lat": 55.8715591, "lon": -4.2917287, "hours": "0900-1700", "is_target": false}}, "routes": {"Kelvingrove Park|Boyd Orr Building": [[55.8690076, -4.2823603], [55.869016, -4.282301], [55.869071, -4.282325], [55.869145, -4.282344], [55.869137, -4.282434], [55.869189, -4.282481], [55.869438, -4.282619], [55.869516, -4.282665], [55.869662, -4.282756], [55.8697, -4.282779], [55.869733, -4.282802], [55.86977, -4.282841], [55.869814, -4.283002], [55.869896, -4.283331], [55.869958, -4.283462], [55.869992, -4.28351], [55.870023, -4.283545], [55.870061, -4.283576], [55.870092, -4.283594], [55.870135, -4.283608], [55.870175, -4.283615], [55.870262, -4.283621], [55.870327, -4.283621], [55.870397, -4.283607], [55.870517, -4.283494], [55.870466, -4.283607], [55.870442, -4.283691], [55.870424, -4.283754], [55.870402, -4.283824], [55.870372, -4.283907], [55.870333, -4.283938], [55.870291, -4.283969], [55.870342, -4.284223], [55.870446, -4.284782], [55.870455, -4.284901], [55.870461, -4.284967], [55.870462, -4.285057], [55.870721, -4.285288], [55.870751, -4.285304], [55.870786, -4.285309], [55.870816, -4.285301], [55.871179, -4.285127], [55.871294, -4.285084], [55.871361, -4.285069], [55.8714, -4.285067], [55.87145, -4.285074], [55.871499, -4.285099], [55.871523, -4.285132], [55.871587, -4.28525], [55.871796, -4.285103], [55.871805, -4.285102], [55.871891, -4.285058], [55.871937, -4.285051], [55.871989, -4.28505], [55.871995, -4.285177], [55.872025, -4.285487], [55.87204, -4.285612], [55.872073, -4.28576], [55.87209, -4.285971], [55.872098, -4.286052], [55.872106, -4.286141], [55.872122, -4.286338], [55.87215, -4.286669], [55.872169, -4.286867], [55.872187, -4.287047], [55.872219, -4.287334], [55.872267, -4.287696], [55.872305, -4.287988], [55.872326, -4.288129], [55.872413, -4.288694], [55.872424, -4.288767], [55.872434, -4.288832], [55.872465, -4.289027], [55.872483, -4.289152], [55.872492, -4.289218], [55.872503, -4.289292], [55.872574, -4.289702], [55.872615, -4.290093], [55.872665, -4.290479], [55.872694, -4.290763], [55.8727, -4.290909], [55.872711, -4.291081], [55.872723, -4.291275], [55.872738, -4.291455], [55.872752, -4.291584], [55.872769, -4.29171], [55.872781, -4.291781], [55.872798, -4.291867], [55.872768, -4.291886], [55.872774, -4.291925], [55.872823, -4.292124], [55.872867, -4.292272], [55.872901, -4.292372], [55.872941, -4.292472], [55.872987, -4.292587], [55.873041, -4.292698], [55.873071, -4.292653], [55.873111, -4.292738], [55.873208, -4.292943], [55.873408, -4.293078], [55.873427, -4.29303], [55.873503, -4.292845], [55.8735737, -4.2926741]], "Boyd Orr Building|Library": [[55.8735737, -4.2926741], [55.873503, -4.292845], [55.873503, -4.292845], [55.873427, -4.29303], [55.873408, -4.293078], [55.873208, -4.292943], [55.873111, -4.292738], [55.873071, -4.292653], [55.873041, -4.292698], [55.872987, -4.292587], [55.872941, -4.292472], [55.872901, -4.292372], [55.872867, -4.292272], [55.872823, -4.292124], [55.872774, -4.291925], [55.872768, -4.291886], [55.872798, -4.291867], [55.872781, -4.291781], [55.872769, -4.29171], [55.872752, -4.291584], [55.872738, -4.291455], [55.872723, -4.291275], [55.872711, -4.291081], [55.8727, -4.290909], [55.872694, -4.290763], [55.872665, -4.290479], [55.872615, -4.290093], [55.872574, -4.289702], [55.872503, -4.289292], [55.872492, -4.289218], [55.872483, -4.289152], [55.872465, -4.289027], [55.872572, -4.288956], [55.872846, -4.288776], [55.873116, -4.288576], [55.873416, -4.288368], [55.873481, -4.288398], [55.873615, -4.288654], [55.8733888, -4.289028]], "Library|The Hive": [[55.8733888, -4.289028], [55.873615, -4.288654], [55.873628, -4.28868], [55.873529, -4.288284], [55.873786, -4.288094], [55.873482, -4.286813], [55.873331, -4.28617], [55.873183, -4.285534], [55.87303, -4.284904], [55.873025, -4.284872], [55.872954, -4.284575], [55.872865, -4.284643]], "Boyd Orr Building|St Andrews Building": [[55.8735737, -4.2926741], [55.873503, -4.292845], [55.873503, -4.292845], [55.873427, -4.29303], [55.873408, -4.293078], [55.873208, -4.292943], [55.873111, -4.292738], [55.873071, -4.292653], [55.873041, -4.292698], [55.872987, -4.292587], [55.872941, -4.292472], [55.872901, -4.292372], [55.872867, -4.292272], [55.872823, -4.292124], [55.872774, -4.291925], [55.872768, -4.291886], [55.872798, -4.291867], [55.872781, -4.291781], [55.872769, -4.29171], [55.872752, -4.291584], [55.872738, -4.291455], [55.872723, -4.291275], [55.872711, -4.291081], [55.8727, -4.290909], [55.872694, -4.290763], [55.872665, -4.290479], [55.872615, -4.290093], [55.872574, -4.289702], [55.872503, -4.289292], [55.872492, -4.289218], [55.872483, -4.289152], [55.872465, -4.289027], [55.872572, -4.288956], [55.872846, -4.288776], [55.873116, -4.288576], [55.873079, -4.288385], [55.873056, -4.288351], [55.873025, -4.288117], [55.873002, -4.287952], [55.872987, -4.287841], [55.872908, -4.287299], [55.872897, -4.287252], [55.873198, -4.287026], [55.873482, -4.286813], [55.873331, -4.28617], [55.873183, -4.285534], [55.87303, -4.284904], [55.873025, -4.284872], [55.872874, -4.284239], [55.872816, -4.283996], [55.87273, -4.283637], [55.872598, -4.283009], [55.872582, -4.282944], [55.872455, -4.282396], [55.872277, -4.281624], [55.872268, -4.281582], [55.872157, -4.281104], [55.87215, -4.281073], [55.87209, -4.280813], [55.872078, -4.280763], [55.87206, -4.280684], [55.872027, -4.280537], [55.872002, -4.280416], [55.871988, -4.280335], [55.87198, -4.280275], [55.871976, -4.280219], [55.871974, -4.280153], [55.871979, -4.280086], [55.872002, -4.279857], [55.872013, -4.279735], [55.872017, -4.27966], [55.871911, -4.279655], [55.871845, -4.27965], [55.871773, -4.279645], [55.871772, -4.279567], [55.871739, -4.279481], [55.8716388, -4.2796039]], "Boyd Orr Building|Kelvingrove Park": [[55.8735737, -4.2926741], [55.873503, -4.292845], [55.873503, -4.292845], [55.873427, -4.29303], [55.873408, -4.293078], [55.873208, -4.292943], [55.873111, -4.292738], [55.873071, -4.292653], [55.873041, -4.292698], [55.872987, -4.292587], [55.872941, -4.292472], [55.872901, -4.292372], [55.872867, -4.292272], [55.872823, -4.292124], [55.872774, -4.291925], [55.872768, -4.291886], [55.872798, -4.291867], [55.872781, -4.291781], [55.872769, -4.29171], [55.872752, -4.291584], [55.872738, -4.291455], [55.872723, -4.291275], [55.872711, -4.291081], [55.8727, -4.290909], [55.872694, -4.290763], [55.872665, -4.290479], [55.872615, -4.290093], [55.872574, -4.289702], [55.872503, -4.289292], [55.872492, -4.289218], [55.872483, -4.289152], [55.872465, -4.289027], [55.872434, -4.288832], [55.872424, -4.288767], [55.872413, -4.288694], [55.872326, -4.288129], [55.872305, -4.287988], [55.872267, -4.287696], [55.872219, -4.287334], [55.872187, -4.287047], [55.872169, -4.286867], [55.87215, -4.286669], [55.872122, -4.286338], [55.872106, -4.286141], [55.872098, -4.286052], [55.87209, -4.285971], [55.872073, -4.28576], [55.87204, -4.285612], [55.872025, -4.285487], [55.871995, -4.285177], [55.871989, -4.28505], [55.871937, -4.285051], [55.871891, -4.285058], [55.871805, -4.285102], [55.871796, -4.285103], [55.871587, -4.28525], [55.871523, -4.285132], [55.871499, -4.285099], [55.87145, -4.285074], [55.8714, -4.285067], [55.871361, -4.285069], [55.871294, -4.285084], [55.871179, -4.285127], [55.870816, -4.285301], [55.870786, -4.285309], [55.870751, -4.285304], [55.870721, -4.285288], [55.870462, -4.285057], [55.870461, -4.284967], [55.870455, -4.284901], [55.870446, -4.284782], [55.870342, -4.284223], [55.870291, -4.283969], [55.870333, -4.283938], [55.870372, -4.283907], [55.870402, -4.283824], [55.870424, -4.283754], [55.870442, -4.283691], [55.870466, -4.283607], [55.870517, -4.283494], [55.870397, -4.283607], [55.870327, -4.283621], [55.870262, -4.283621], [55.870175, -4.283615], [55.870135, -4.283608], [55.870092, -4.283594], [55.870061, -4.283576], [55.870023, -4.283545], [55.869992, -4.28351], [55.869958, -4.283462], [55.869896, -4.283331], [55.869814, -4.283002], [55.86977, -4.282841], [55.869733, -4.282802], [55.8697, -4.282779], [55.869662, -4.282756], [55.869516, -4.282665], [55.869438, -4.282619], [55.869189, -4.282481], [55.869137, -4.282434], [55.869145, -4.282344], [55.869071, -4.282325], [55.869016, -4.282301], [55.8690076, -4.2823603]], "Kelvingrove Park|St Andrews Building": [[55.8690076, -4.2823603], [55.869016, -4.282301], [55.869071, -4.282325], [55.869145, -4.282344], [55.869215, -4.28236], [55.869274, -4.28237], [55.869329, -4.282373], [55.869381, -4.282368], [55.869429, -4.282357], [55.869468, -4.282344], [55.869519, -4.282317], [55.86958, -4.282275], [55.869667, -4.282199], [55.869737, -4.282139], [55.869962, -4.281927], [55.870096, -4.281794], [55.870131, -4.281753], [55.870193, -4.281681], [55.87029, -4.281585], [55.870396, -4.281625], [55.870413, -4.281631], [55.870633, -4.281702], [55.87069, -4.281736], [55.870874, -4.281755], [55.871002, -4.281762], [55.871073, -4.281765], [55.871199, -4.281755], [55.871242, -4.281738], [55.871281, -4.281713], [55.871331, -4.281632], [55.871425, -4.281542], [55.871504, -4.281452], [55.871588, -4.28138], [55.871675, -4.28137], [55.871672, -4.281552], [55.871905, -4.280942], [55.871995, -4.280823], [55.872078, -4.280763], [55.87206, -4.280684], [55.872027, -4.280537], [55.872002, -4.280416], [55.871988, -4.280335], [55.87198, -4.280275], [55.871976, -4.280219], [55.871974, -4.280153], [55.871979, -4.280086], [55.872002, -4.279857], [55.872013, -4.279735], [55.872017, -4.27966], [55.871911, -4.279655], [55.871845, -4.27965], [55.871773, -4.279645], [55.871772, -4.279567], [55.871739, -4.279481], [55.8716388, -4.2796039]], "St Andrews Building|The Hive": [[55.8716388, -4.2796039], [55.871739, -4.279481], [55.871772, -4.279567], [55.871773, -4.279645], [55.871845, -4.27965], [55.871911, -4.279655], [55.872017, -4.27966], [55.872013, -4.279735], [55.872002, -4.279857], [55.871979, -4.280086], [55.871974, -4.280153], [55.871976, -4.280219], [55.87198, -4.280275], [55.871988, -4.280335], [55.872002, -4.280416], [55.872027, -4.280537], [55.87206, -4.280684], [55.872078, -4.280763], [55.87209, -4.280813], [55.87215, -4.281073], [55.872157, -4.281104], [55.872268, -4.281582], [55.872277, -4.281624], [55.872455, -4.282396], [55.872582, -4.282944], [55.872598, -4.283009], [55.87273, -4.283637], [55.872816, -4.283996], [55.872874, -4.284239], [55.872954, -4.284575], [55.872865, -4.284643]], "Kelvingrove Park|Queen Margaret Union": [[55.8690076, -4.2823603], [55.869016, -4.282301], [55.869071, -4.282325], [55.869145, -4.282344], [55.869137, -4.282434], [55.869189, -4.282481], [55.869438, -4.282619], [55.869516, -4.282665], [55.869662, -4.282756], [55.8697, -4.282779], [55.869733, -4.282802], [55.86977, -4.282841], [55.869814, -4.283002], [55.869896, -4.283331], [55.869958, -4.283462], [55.869992, -4.28351], [55.870023, -4.283545], [55.870061, -4.283576], [55.870092, -4.283594], [55.870135, -4.283608], [55.870175, -4.283615], [55.870262, -4.283621], [55.870327, -4.283621], [55.870397, -4.283607], [55.870517, -4.283494], [55.870466, -4.283607], [55.870442, -4.283691], [55.870424, -4.283754], [55.870402, -4.283824], [55.870372, -4.283907], [55.870333, -4.283938], [55.870291, -4.283969], [55.870342, -4.284223], [55.870446, -4.284782], [55.870455, -4.284901], [55.870461, -4.284967], [55.870462, -4.285057], [55.870721, -4.285288], [55.870751, -4.285304], [55.870786, -4.285309], [55.870816, -4.285301], [55.871179, -4.285127], [55.871294, -4.285084], [55.871361, -4.285069], [55.8714, -4.285067], [55.87145, -4.285074], [55.871499, -4.285099], [55.871523, -4.285132], [55.871587, -4.28525], [55.871796, -4.285103], [55.871805, -4.285102], [55.871891, -4.285058], [55.871937, -4.285051], [55.871989, -4.28505], [55.871995, -4.285177], [55.872025, -4.285487], [55.87204, -4.285612], [55.872073, -4.28576], [55.87209, -4.285971], [55.872098, -4.286052], [55.872106, -4.286141], [55.872122, -4.286338], [55.87215, -4.286669], [55.872169, -4.286867], [55.872187, -4.287047], [55.872219, -4.287334], [55.872267, -4.287696], [55.872305, -4.287988], [55.872326, -4.288129], [55.872413, -4.288694], [55.872424, -4.288767], [55.872434, -4.288832], [55.872465, -4.289027], [55.872483, -4.289152], [55.872492, -4.289218], [55.872503, -4.289292], [55.872574, -4.289702], [55.872619, -4.28969], [55.872638, -4.289694], [55.872658, -4.28971], [55.872668, -4.289735], [55.872723, -4.289895], [55.872779, -4.290066], [55.87283, -4.290282], [55.872895, -4.290549], [55.872906, -4.290577], [55.873266, -4.291044], [55.873523, -4.291388], [55.87354, -4.291339], [55.873653, -4.291493], [55.873644, -4.291516], [55.873641, -4.291532], [55.8736412, -4.2915321]], "Queen Margaret Union|Glasgow University Union": [[55.8736412, -4.2915321], [55.873641, -4.291532], [55.873644, -4.291516], [55.873653, -4.291493], [55.87354, -4.291339], [55.873523, -4.291388], [55.873266, -4.291044], [55.872906, -4.290577], [55.872895, -4.290549], [55.87283, -4.290282], [55.872779, -4.290066], [55.872723, -4.289895], [55.872668, -4.289735], [55.872658, -4.28971], [55.872638, -4.289694], [55.872619, -4.28969], [55.872574, -4.289702], [55.872503, -4.289292], [55.872492, -4.289218], [55.872483, -4.289152], [55.872465, -4.289027], [55.872434, -4.288832], [55.872424, -4.288767], [55.872413, -4.288694], [55.872326, -4.288129], [55.872305, -4.287988], [55.872267, -4.287696], [55.872219, -4.287334], [55.872187, -4.287047], [55.872169, -4.286867], [55.87215, -4.286669], [55.872122, -4.286338], [55.872106, -4.286141], [55.872098, -4.286052], [55.87209, -4.285971], [55.872073, -4.28576], [55.87209, -4.285585], [55.872105, -4.28547], [55.872128, -4.285334], [55.872158, -4.285197], [55.87221, -4.285056], [55.872236, -4.284985], [55.872252, -4.284942], [55.872304, -4.284841], [55.872335, -4.284791], [55.872392, -4.284906], [55.8725047, -4.2849708]], "Glasgow University Union|Main Building": [[55.8725047, -4.2849708], [55.872392, -4.284906], [55.872392, -4.284906], [55.872335, -4.284791], [55.872304, -4.284841], [55.872252, -4.284942], [55.872236, -4.284985], [55.87221, -4.285056], [55.872158, -4.285197], [55.872128, -4.285334], [55.872105, -4.28547], [55.87209, -4.285585], [55.872073, -4.28576], [55.87209, -4.285971], [55.872098, -4.286052], [55.872106, -4.286141], [55.872122, -4.286338], [55.87215, -4.286669], [55.872169, -4.286867], [55.872187, -4.287047], [55.872219, -4.287334], [55.872267, -4.287696], [55.872305, -4.287988], [55.872326, -4.288129], [55.872236, -4.288155], [55.872196, -4.288173], [55.872197, -4.288198], [55.872197, -4.288223], [55.872195, -4.288252], [55.872189, -4.288278], [55.872182, -4.288299], [55.872173, -4.288316], [55.872162, -4.288331], [55.872147, -4.288342], [55.872132, -4.28835], [55.872102, -4.288363], [55.871937, -4.288432], [55.871914, -4.288483], [55.871891, -4.288512], [55.87187, -4.288522], [55.871867, -4.288523], [55.871843, -4.288341]], "St Andrews Building|Sir Alwyn Williams Building": [[55.8716388, -4.2796039], [55.871739, -4.279481], [55.871772, -4.279567], [55.871773, -4.279645], [55.871845, -4.27965], [55.871911, -4.279655], [55.872017, -4.27966], [55.872013, -4.279735], [55.872002, -4.279857], [55.871979, -4.280086], [55.871974, -4.280153], [55.871976, -4.280219], [55.87198, -4.280275], [55.871988, -4.280335], [55.872002, -4.280416], [55.872027, -4.280537], [55.87206, -4.280684], [55.872078, -4.280763], [55.87209, -4.280813], [55.87215, -4.281073], [55.872157, -4.281104], [55.872268, -4.281582], [55.872277, -4.281624], [55.872455, -4.282396], [55.872582, -4.282944], [55.872598, -4.283009], [55.87273, -4.283637], [55.872816, -4.283996], [55.872874, -4.284239], [55.873025, -4.284872], [55.87303, -4.284904], [55.873183, -4.285534], [55.873331, -4.28617], [55.873482, -4.286813], [55.873198, -4.287026], [55.872897, -4.287252], [55.872908, -4.287299], [55.872987, -4.287841], [55.873002, -4.287952], [55.873025, -4.288117], [55.873056, -4.288351], [55.873079, -4.288385], [55.873116, -4.288576], [55.872846, -4.288776], [55.873047, -4.289831], [55.873084, -4.289888], [55.873153, -4.290169], [55.873193, -4.290243], [55.873432, -4.290543], [55.873437, -4.290571], [55.873449, -4.290586], [55.873458, -4.290597], [55.873471, -4.290612], [55.873462, -4.290633], [55.873456, -4.290626], [55.87345, -4.290619], [55.873439, -4.290605], [55.873431, -4.290596], [55.873426, -4.290609], [55.873384, -4.290708], [55.873379, -4.29072], [55.873392, -4.290736], [55.873397, -4.290725], [55.873412, -4.290691], [55.873416, -4.290681], [55.87343, -4.290648], [55.873434, -4.290639], [55.873446, -4.290655], [55.873437, -4.290676], [55.873433, -4.290688], [55.873406, -4.290754], [55.873401, -4.290764], [55.873395, -4.290779], [55.873372, -4.290745], [55.873283, -4.290962], [55.873266, -4.291044], [55.87325, -4.291086], [55.873229, -4.291142], [55.873208, -4.291191], [55.873189, -4.291238], [55.873184, -4.291285], [55.87345, -4.291672], [55.873476, -4.291686], [55.873502, -4.29169], [55.87359, -4.291812], [55.87396, -4.292321], [55.873985, -4.292357], [55.873978, -4.292323], [55.87398, -4.292289], [55.873989, -4.29224], [55.873997, -4.292221], [55.874012, -4.292205], [55.874012, -4.292205], [55.8739703, -4.2919055]], "Sir Alwyn Williams Building|Queen Margaret Union": [[55.8739703, -4.2919055], [55.874012, -4.292205], [55.874012, -4.292205], [55.873997, -4.292221], [55.873989, -4.29224], [55.87398, -4.292289], [55.873978, -4.292323], [55.873985, -4.292357], [55.87396, -4.292321], [55.87359, -4.291812], [55.873635, -4.291691], [55.873641, -4.29164], [55.873643, -4.291597], [55.87364, -4.291541], [55.873641, -4.291532], [55.8736412, -4.2915321]], "Queen Margaret Union|Library": [[55.8736412, -4.2915321], [55.873641, -4.291532], [55.873644, -4.291516], [55.873653, -4.291493], [55.87354, -4.291339], [55.873523, -4.291388], [55.873266, -4.291044], [55.873283, -4.290962], [55.873372, -4.290745], [55.873395, -4.290779], [55.873401, -4.290764], [55.873406, -4.290754], [55.873433, -4.290688], [55.873437, -4.290676], [55.873446, -4.290655], [55.873434, -4.290639], [55.87343, -4.290648], [55.873416, -4.290681], [55.873412, -4.290691], [55.873397, -4.290725], [55.873392, -4.290736], [55.873379, -4.29072], [55.873384, -4.290708], [55.873426, -4.290609], [55.873431, -4.290596], [55.873439, -4.290605], [55.87345, -4.290619], [55.873456, -4.290626], [55.873462, -4.290633], [55.873471, -4.290612], [55.873458, -4.290597], [55.873449, -4.290586], [55.873437, -4.290571], [55.873432, -4.290543], [55.873193, -4.290243], [55.873153, -4.290169], [55.873084, -4.289888], [55.873047, -4.289831], [55.872846, -4.288776], [55.873116, -4.288576], [55.873416, -4.288368], [55.873481, -4.288398], [55.873615, -4.288654], [55.8733888, -4.289028]], "Library|Boyd Orr Building": [[55.8733888, -4.289028], [55.873615, -4.288654], [55.873481, -4.288398], [55.873416, -4.288368], [55.873116, -4.288576], [55.872846, -4.288776], [55.872572, -4.288956], [55.872465, -4.289027], [55.872483, -4.289152], [55.872492, -4.289218], [55.872503, -4.289292], [55.872574, -4.289702], [55.872615, -4.290093], [55.872665, -4.290479], [55.872694, -4.290763], [55.8727, -4.290909], [55.872711, -4.291081], [55.872723, -4.291275], [55.872738, -4.291455], [55.872752, -4.291584], [55.872769, -4.29171], [55.872781, -4.291781], [55.872798, -4.291867], [55.872768, -4.291886], [55.872774, -4.291925], [55.872823, -4.292124], [55.872867, -4.292272], [55.872901, -4.292372], [55.872941, -4.292472], [55.872987, -4.292587], [55.873041, -4.292698], [55.873071, -4.292653], [55.873111, -4.292738], [55.873208, -4.292943], [55.873408, -4.293078], [55.873427, -4.29303], [55.873503, -4.292845], [55.8735737, -4.2926741]]}, "people": [{"id": "2453876J", "name": "Scott Johnston", "subject": "Computing Science", "age": 24, "sex": "Male", "year": 5, "height": 180, "color": "#adf931", "societies": ["Volleyball Society", "Glasgow Latin America Society", "Motorcycling Society"], "is_mastermind": true, "evidence": ["No irregularities in their own record, but met all 6 conspirators"], "meetings": [{"location": "Kelvingrove Park", "start": 475, "end": 517, "with": "Eric Parkin"}, {"location": "Kelvingrove Park", "start": 504, "end": 517, "with": "Paul Butler"}, {"location": "Boyd Orr Building", "start": 600, "end": 720, "with": "Alice Patterson"}, {"location": "Boyd Orr Building", "start": 600, "end": 720, "with": "Stuart Wands"}, {"location": "Boyd Orr Building", "start": 676, "end": 720, "with": "Oscar Brown"}, {"location": "Library", "start": 1023, "end": 1070, "with": "Alice Patterson"}, {"location": "Library", "start": 1123, "end": 1173, "with": "Abdul Murphy"}, {"location": "The Hive", "start": 1351, "end": 1488, "with": "Stuart Wands"}], "visits": [{"location": "Kelvingrove Park", "start": 475, "end": 517}, {"location": "Boyd Orr Building", "start": 600, "end": 720}, {"location": "Library", "start": 1023, "end": 1183}, {"location": "The Hive", "start": 1351, "end": 1550}]}, {"id": "2456431B", "name": "Oscar Brown", "subject": "Engineering", "age": 23, "sex": "Male", "year": 5, "height": 181, "color": "#c92450", "societies": ["Astrology Society", "Sexpression"], "is_mastermind": false, "evidence": ["Logged at James Watt Building (10:00-13:00) and Boyd Orr Building (11:16-12:32) at the same time", "Logged at Boyd Orr Building (11:16-12:32) and Kelvingrove Park (12:10-15:32) at the same time", "Logged at Kelvingrove Park (12:10-15:32) and Queen Margaret Union (13:43-16:43) at the same time"], "meetings": [{"location": "Boyd Orr Building", "start": 676, "end": 720, "with": "Scott Johnston"}], "visits": [{"location": "James Watt Building", "start": 600, "end": 780}, {"location": "Boyd Orr Building", "start": 676, "end": 752}, {"location": "Kelvingrove Park", "start": 730, "end": 932}, {"location": "Queen Margaret Union", "start": 823, "end": 1003}]}, {"id": "2774868P", "name": "Alice Patterson", "subject": "Engineering", "age": 26, "sex": "Female", "year": 2, "height": 171, "color": "#cce88b", "societies": ["Volleyball Society", "Back to Yoga Society"], "is_mastermind": false, "evidence": ["Missed Engineering lecture at James Watt Building (10:00-13:00); was at Boyd Orr Building (10:00-12:00) instead", "Logged at St Andrews Building (16:25-17:00) and Library (16:35-17:50) at the same time"], "meetings": [{"location": "Boyd Orr Building", "start": 600, "end": 720, "with": "Scott Johnston"}, {"location": "Library", "start": 1023, "end": 1070, "with": "Scott Johnston"}], "visits": [{"location": "Boyd Orr Building", "start": 600, "end": 720}, {"location": "St Andrews Building", "start": 985, "end": 1020}, {"location": "Library", "start": 995, "end": 1070}]}, {"id": "2813225B", "name": "Stuart Wands", "subject": "Computing Science", "age": 17, "sex": "Male", "year": 1, "height": 173, "color": "#a0f489", "societies": [], "is_mastermind": false, "evidence": ["Entered The Hive (22:08-00:48) aged 17"], "meetings": [{"location": "Boyd Orr Building", "start": 600, "end": 720, "with": "Scott Johnston"}, {"location": "The Hive", "start": 1351, "end": 1488, "with": "Scott Johnston"}], "visits": [{"location": "Boyd Orr Building", "start": 600, "end": 720}, {"location": "Kelvingrove Park", "start": 763, "end": 799}, {"location": "St Andrews Building", "start": 892, "end": 976}, {"location": "The Hive", "start": 1328, "end": 1488}]}, {"id": "2729563B", "name": "Paul Butler", "subject": "Engineering", "age": 26, "sex": "Male", "year": 2, "height": 175, "color": "#2e4ea0", "societies": ["Sexpression", "Esports Society"], "is_mastermind": false, "evidence": ["Logged at Kelvingrove Park (08:24-10:37) and James Watt Building (10:00-13:00) at the same time"], "meetings": [{"location": "Kelvingrove Park", "start": 504, "end": 517, "with": "Scott Johnston"}], "visits": [{"location": "Kelvingrove Park", "start": 504, "end": 637}, {"location": "James Watt Building", "start": 600, "end": 780}]}, {"id": "2546112P", "name": "Eric Parkin", "subject": "Pharmacy", "age": 21, "sex": "Male", "year": 4, "height": 170, "color": "#22b7b2", "societies": [], "is_mastermind": false, "evidence": ["Subject 'Pharmacy' is not on the campus timetable"], "meetings": [{"location": "Kelvingrove Park", "start": 475, "end": 517, "with": "Scott Johnston"}], "visits": [{"location": "Kelvingrove Park", "start": 440, "end": 523}, {"location": "Queen Margaret Union", "start": 556, "end": 686}, {"location": "Glasgow University Union", "start": 737, "end": 853}, {"location": "Main Building", "start": 912, "end": 1020}]}, {"id": "2786843M", "name": "Abdul Murphy", "subject": "English Literature", "age": 24, "sex": "Male", "year": 2, "height": 167, "color": "#e079db", "societies": ["Bad Movie Society", "Grim Reaper Quidditch Club", "Sexpression", "Brunei Society"], "is_mastermind": false, "evidence": ["In Boyd Orr Building 22:08-22:19, outside opening hours (08:00-21:00)"], "meetings": [{"location": "Library", "start": 1123, "end": 1173, "with": "Scott Johnston"}], "visits": [{"location": "St Andrews Building", "start": 540, "end": 720}, {"location": "Sir Alwyn Williams Building", "start": 728, "end": 782}, {"location": "Queen Margaret Union", "start": 833, "end": 927}, {"location": "Library", "start": 1123, "end": 1173}, {"location": "Boyd Orr Building", "start": 1328, "end": 1339}]}], "events": [{"type": "flag", "time": 440, "location": "Kelvingrove Park", "title": "Eric Parkin", "detail": "Subject 'Pharmacy' is not on the campus timetable"}, {"type": "meeting", "time": 475, "location": "Kelvingrove Park", "title": "Scott Johnston meets Eric Parkin", "detail": "Kelvingrove Park, 07:55-08:37 (42 min)"}, {"type": "meeting", "time": 504, "location": "Kelvingrove Park", "title": "Scott Johnston meets Paul Butler", "detail": "Kelvingrove Park, 08:24-08:37 (13 min)"}, {"type": "meeting", "time": 600, "location": "Boyd Orr Building", "title": "Scott Johnston meets Alice Patterson", "detail": "Boyd Orr Building, 10:00-12:00 (120 min)"}, {"type": "meeting", "time": 600, "location": "Boyd Orr Building", "title": "Scott Johnston meets Stuart Wands", "detail": "Boyd Orr Building, 10:00-12:00 (120 min)"}, {"type": "flag", "time": 600, "location": "Boyd Orr Building", "title": "Alice Patterson", "detail": "Missed Engineering lecture at James Watt Building (10:00-13:00); was at Boyd Orr Building (10:00-12:00) instead"}, {"type": "flag", "time": 600, "location": "James Watt Building", "title": "Paul Butler", "detail": "Logged at Kelvingrove Park (08:24-10:37) and James Watt Building (10:00-13:00) at the same time"}, {"type": "meeting", "time": 676, "location": "Boyd Orr Building", "title": "Scott Johnston meets Oscar Brown", "detail": "Boyd Orr Building, 11:16-12:00 (44 min)"}, {"type": "flag", "time": 676, "location": "Boyd Orr Building", "title": "Oscar Brown", "detail": "Logged at James Watt Building (10:00-13:00) and Boyd Orr Building (11:16-12:32) at the same time"}, {"type": "flag", "time": 730, "location": "Kelvingrove Park", "title": "Oscar Brown", "detail": "Logged at Boyd Orr Building (11:16-12:32) and Kelvingrove Park (12:10-15:32) at the same time"}, {"type": "flag", "time": 823, "location": "Queen Margaret Union", "title": "Oscar Brown", "detail": "Logged at Kelvingrove Park (12:10-15:32) and Queen Margaret Union (13:43-16:43) at the same time"}, {"type": "flag", "time": 995, "location": "Library", "title": "Alice Patterson", "detail": "Logged at St Andrews Building (16:25-17:00) and Library (16:35-17:50) at the same time"}, {"type": "meeting", "time": 1023, "location": "Library", "title": "Scott Johnston meets Alice Patterson", "detail": "Library, 17:03-17:50 (47 min)"}, {"type": "meeting", "time": 1123, "location": "Library", "title": "Scott Johnston meets Abdul Murphy", "detail": "Library, 18:43-19:33 (50 min)"}, {"type": "flag", "time": 1328, "location": "The Hive", "title": "Stuart Wands", "detail": "Entered The Hive (22:08-00:48) aged 17"}, {"type": "flag", "time": 1328, "location": "Boyd Orr Building", "title": "Abdul Murphy", "detail": "In Boyd Orr Building 22:08-22:19, outside opening hours (08:00-21:00)"}, {"type": "meeting", "time": 1351, "location": "The Hive", "title": "Scott Johnston meets Stuart Wands", "detail": "The Hive, 22:31-00:48 (137 min)"}]};
+
+    const SPEEDS = [1, 5, 15, 45];      // simulated minutes per real second
+    const FOLLOW_ZOOM = 17;
+    // Esri's Canvas basemaps need no API key; attribution is required.
+    const BASEMAPS = {
+      dark: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      light: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    };
+    const ATTRIBUTION =
+      'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, ' +
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+    const ICONS = {
+      play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2v12l10-6z"/></svg>',
+      pause: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2h3v12h-3zM9.5 2h3v12h-3z"/></svg>',
+    };
+    const ROUTE_COLOR = '#5E6680';   // --muted; Leaflet needs a literal colour
+
+    const state = {
+      time: CASE.timeline.start,
+      playing: true,
+      speed: 5,
+      following: null,
+      fileId: null,
+      tab: 'case',
+      basemap: 'dark',
+      shownEvents: 0,          // CASE.events is sorted, so this is an index into it
+      lastFrame: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const personById = (id) => CASE.people.find((p) => p.id === id);
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[c]);
+    }
+
+    function formatTime(minutes) {
+      const h = Math.floor(minutes / 60) % 24;
+      const m = Math.floor(minutes % 60);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+
+    const initials = (name) => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+    const swatch = (p) => `<span class="swatch" style="background-color: ${escapeHtml(p.color)}"></span>`;
+    // Flags are logged against the person's name.
+    const flagsFor = (p) => CASE.events.filter((ev) => ev.type === 'flag' && ev.title === p.name);
+    const countOf = (events, type) => events.filter((ev) => ev.type === type).length;
+
+    // ------------------------------------------------------------ map
+
+    const map = L.map('map', { center: CASE.center, zoom: 16, zoomControl: false });
+    map.attributionControl.setPrefix(false);
+
+    let tiles = null;
+    function setBasemap(name) {
+      state.basemap = name;
+      if (tiles) map.removeLayer(tiles);
+      tiles = L.tileLayer(BASEMAPS[name], { maxZoom: 19, maxNativeZoom: 16, attribution: ATTRIBUTION }).addTo(map);
+      $('map').classList.toggle('basemap-dark', name === 'dark');
+      $('map').classList.toggle('basemap-light', name === 'light');
+      document.querySelectorAll('[data-basemap]').forEach((b) =>
+        b.setAttribute('aria-pressed', b.dataset.basemap === name));
+    }
+
+    for (const b of Object.values(CASE.buildings)) {
+      const icon = L.divIcon({
+        className: '',
+        html: `<div class="bldg ${b.is_target ? 'target' : ''}">
+                 <div class="bldg-dot"></div>
+                 <div class="bldg-name">${escapeHtml(b.name)}</div>
+               </div>`,
+        iconSize: [0, 0],
+      });
+      L.marker([b.lat, b.lon], { icon, keyboard: false })
+        .bindPopup(`<b>${escapeHtml(b.name.toUpperCase())}</b><br>OPEN ${escapeHtml(b.hours.toUpperCase())}`)
+        .addTo(map);
+    }
+
+    const routesLayer = L.layerGroup(Object.values(CASE.routes).map((points) =>
+      L.polyline(points, { color: ROUTE_COLOR, weight: 1.5, dashArray: '2 4', interactive: false })));
+
+    const markers = {};
+    for (const p of CASE.people) {
+      const icon = L.divIcon({
+        className: '',
+        html: `<div class="pin ${p.is_mastermind ? 'mm' : ''}" id="pin-${escapeHtml(p.id)}">
+                 <div class="pin-dot" style="background-color: ${escapeHtml(p.color)}"></div>
+                 <span class="pin-tag">${initials(p.name)}</span>
+               </div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+      });
+      markers[p.id] = L.marker(CASE.center, { icon, zIndexOffset: p.is_mastermind ? 800 : 400 })
+        .bindTooltip(`<b>${escapeHtml(p.name.toUpperCase())}</b><br>${escapeHtml(p.subject)}`, { direction: 'top', offset: [0, -8] })
+        .on('click', () => follow(p.id))
+        .addTo(map);
+    }
+
+    map.on('mousemove', (e) => {
+      const { lat, lng } = e.latlng;
+      $('hud-coords').textContent =
+        `${Math.abs(lat).toFixed(5)}${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lng).toFixed(5)}${lng >= 0 ? 'E' : 'W'}`;
+    });
+
+    // Walking routes keyed "From|To", with the running distance at each
+    // point so a fraction of the walk maps to a spot along the path.
+    const ROUTES = Object.fromEntries(Object.entries(CASE.routes).map(([key, points]) => {
+      const dist = [0];
+      for (let i = 1; i < points.length; i++) {
+        const [latA, lonA] = points[i - 1], [latB, lonB] = points[i];
+        dist.push(dist[i - 1] + Math.hypot(latB - latA, (lonB - lonA) * Math.cos(latA * Math.PI / 180)));
+      }
+      return [key, { points, dist }];
+    }));
+
+    // Position a fraction t of the way along the walk; a straight line if
+    // there's no route for it.
+    function pointAlongWalk(fromName, toName, t) {
+      const route = ROUTES[`${fromName}|${toName}`];
+      if (!route) {
+        const a = CASE.buildings[fromName], b = CASE.buildings[toName];
+        return [a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t];
+      }
+      const { points, dist } = route;
+      const target = t * dist[dist.length - 1];
+      const found = dist.findIndex((d) => d >= target);
+      const i = found === -1 ? dist.length - 1 : Math.max(1, found);
+      const k = (target - dist[i - 1]) / (dist[i] - dist[i - 1] || 1);
+      const [latA, lonA] = points[i - 1], [latB, lonB] = points[i];
+      return [latA + (latB - latA) * k, lonA + (lonB - lonA) * k];
+    }
+
+    // Where a person is at a given minute: inside a building, walking
+    // between two consecutive buildings, or off the log (before/after).
+    function positionAt(person, minute) {
+      const visits = person.visits;
+      for (const v of visits) {
+        if (minute >= v.start && minute <= v.end) {
+          const b = CASE.buildings[v.location];
+          return { lat: b.lat, lon: b.lon, label: v.location, place: v.location, onLog: true };
+        }
+      }
+      for (let i = 0; i < visits.length - 1; i++) {
+        const from = visits[i], to = visits[i + 1];
+        if (minute > from.end && minute < to.start) {
+          const [lat, lon] = pointAlongWalk(from.location, to.location, (minute - from.end) / (to.start - from.end));
+          return { lat, lon, label: `Walking to ${to.location}`, place: null, onLog: true };
+        }
+      }
+      const edge = minute < visits[0].start ? visits[0] : visits[visits.length - 1];
+      const b = CASE.buildings[edge.location];
+      return { lat: b.lat, lon: b.lon, label: 'Not on campus', place: edge.location, onLog: false };
+    }
+
+    function updateMarkers() {
+      const positions = CASE.people.map((p) => [p.id, positionAt(p, state.time)]);
+
+      // Fan out people standing in the same building so their dots don't stack.
+      const byPlace = {};
+      for (const [id, pos] of positions) {
+        if (pos.place) (byPlace[pos.place] ||= []).push(id);
+      }
+      const offsetFor = (id, place) => {
+        const group = place ? byPlace[place] : [id];
+        if (group.length < 2) return [0, 0];
+        const angle = (group.indexOf(id) / group.length) * 2 * Math.PI;
+        return [Math.sin(angle) * 0.00025, Math.cos(angle) * 0.00035];
+      };
+
+      for (const [id, pos] of positions) {
+        const [dLat, dLon] = offsetFor(id, pos.place);
+        markers[id].setLatLng([pos.lat + dLat, pos.lon + dLon]).setOpacity(pos.onLog ? 1 : 0.35);
+        document.querySelectorAll(`[data-status="${id}"]`).forEach((el) => {
+          el.textContent = pos.label;
+          el.classList.toggle('on', pos.onLog);
+        });
+      }
+      const onCampus = positions.filter(([, pos]) => pos.onLog).length;
+      $('status-oncampus').textContent = `${onCampus}/${CASE.people.length}`;
+
+      if (state.following) {
+        map.panTo(markers[state.following].getLatLng(), { animate: false });
+      }
+    }
+
+    // ------------------------------------------------------------- events
+
+    function renderEvent(ev, isNew) {
+      const item = document.createElement('button');
+      item.className = `log-row ${ev.type} ${isNew ? 'new' : ''}`;
+      item.innerHTML = `
+        <span class="log-time">${formatTime(ev.time)}</span>
+        <span class="log-type">${ev.type === 'meeting' ? 'MEET' : 'FLAG'}</span>
+        <span class="log-title">${escapeHtml(ev.title)}</span>
+        <span class="log-detail">${escapeHtml(ev.detail)}</span>`;
+      item.addEventListener('click', () => jumpTo(ev.time, ev.location));
+      return item;
+    }
+
+    function syncEventLog() {
+      const firstFuture = CASE.events.findIndex((ev) => ev.time > state.time);
+      const count = firstFuture === -1 ? CASE.events.length : firstFuture;
+      if (count === state.shownEvents && $('event-list').childElementCount) return;
+
+      const list = $('event-list');
+      const rewinding = count < state.shownEvents;
+      if (rewinding || state.shownEvents === 0) list.replaceChildren();
+      const from = rewinding ? 0 : state.shownEvents;
+      for (let i = from; i < count; i++) list.prepend(renderEvent(CASE.events[i], !rewinding));
+      state.shownEvents = count;
+
+      if (count === 0) {
+        list.innerHTML = '<p class="empty"><strong>No events yet.</strong>Flags and meetings are logged here as the day plays out.</p>';
+      }
+      const shown = CASE.events.slice(0, count);
+      $('event-count').textContent = `${count}/${CASE.events.length}`;
+      $('status-flags').textContent = `${countOf(shown, 'flag')}/${countOf(CASE.events, 'flag')}`;
+      $('status-meetings').textContent = `${countOf(shown, 'meeting')}/${countOf(CASE.events, 'meeting')}`;
+    }
+
+    // Seek the replay to a moment and fly the map to where it happened.
+    function jumpTo(minute, location) {
+      seek(minute);
+      const b = CASE.buildings[location];
+      if (b) {
+        setFollowing(null);
+        map.flyTo([b.lat, b.lon], FOLLOW_ZOOM, { duration: 0.8 });
+      }
+    }
+
+    function stepEvent(direction) {
+      const ev = direction > 0
+        ? CASE.events.find((e) => e.time > state.time + 0.5)
+        : CASE.events.findLast((e) => e.time < state.time - 0.5);
+      if (ev) jumpTo(ev.time, ev.location);
+    }
+
+    // ----------------------------------------------------------- playback
+
+    // Percentage position of a minute along the timeline.
+    function pct(minute) {
+      const { start, end } = CASE.timeline;
+      return ((Math.min(Math.max(minute, start), end) - start) / (end - start)) * 100;
+    }
+
+    function render() {
+      $('clock').textContent = formatTime(state.time);
+      $('status-clock').textContent = formatTime(state.time);
+      $('scrubber').value = state.time;
+      $('playhead').style.left = `${pct(state.time)}%`;
+      updateMarkers();
+      syncEventLog();
+    }
+
+    function seek(minute) {
+      state.time = Math.min(Math.max(minute, CASE.timeline.start), CASE.timeline.end);
+      render();
+    }
+
+    function tick(now) {
+      if (state.lastFrame !== null && state.playing) {
+        const elapsed = (now - state.lastFrame) / 1000;
+        const next = state.time + elapsed * state.speed;
+        seek(next > CASE.timeline.end ? CASE.timeline.start : next);
+      }
+      state.lastFrame = now;
+      requestAnimationFrame(tick);
+    }
+
+    function setPlaying(playing) {
+      state.playing = playing;
+      const btn = $('btn-play');
+      btn.innerHTML = playing ? ICONS.pause : ICONS.play;
+      btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+      $('status-mode').className = `mode ${playing ? 'live' : 'paused'}`;
+      $('status-mode').innerHTML = playing ? '&#9679; LIVE' : '&#9632; PAUSED';
+    }
+
+    function setSpeed(speed) {
+      state.speed = speed;
+      $('status-speed').textContent = `${speed}×`;
+      document.querySelectorAll('[data-speed]').forEach((b) =>
+        b.setAttribute('aria-pressed', Number(b.dataset.speed) === speed));
+    }
+
+    function buildTimeline() {
+      const { start, end } = CASE.timeline;
+      const scrubber = $('scrubber');
+      scrubber.min = start;
+      scrubber.max = end;
+      scrubber.addEventListener('input', () => seek(Number(scrubber.value)));
+
+      const steps = 6;
+      $('ticks').innerHTML = Array.from({ length: steps + 1 }, (_, i) => {
+        const m = start + ((end - start) * i) / steps;
+        return `<span style="left: ${pct(m)}%">${formatTime(m)}</span>`;
+      }).join('');
+
+      // One lane per person: time on campus, plus their flags and meetings.
+      $('lanes').innerHTML = CASE.people.map((p) => `
+        <div class="lane ${p.is_mastermind ? 'mm' : ''}" data-lane="${escapeHtml(p.id)}"
+             style="--lane-color: ${escapeHtml(p.color)}" title="${escapeHtml(p.name)}">
+          <span class="lane-tag">${initials(p.name)}</span>
+          <div class="lane-track">
+            ${p.visits.map((v) => `<i class="seg-on" style="left: ${pct(v.start)}%; width: ${pct(v.end) - pct(v.start)}%"></i>`).join('')}
+            ${p.meetings.map((m) => `<i class="m-meet" style="left: ${pct(m.start)}%"></i>`).join('')}
+            ${flagsFor(p).map((ev) => `<i class="m-flag" style="left: ${pct(ev.time)}%"></i>`).join('')}
+          </div>
+        </div>`).join('');
+
+      const speedButtons = SPEEDS.map((s) =>
+        `<button data-speed="${s}" aria-pressed="false">${s}&times;</button>`).join('');
+      $('speeds').innerHTML = speedButtons;
+      $('left-speeds').innerHTML = speedButtons;
+      document.querySelectorAll('[data-speed]').forEach((b) =>
+        b.addEventListener('click', () => setSpeed(Number(b.dataset.speed))));
+    }
+
+    // ------------------------------------------------------------- people
+
+    function setFollowing(id) {
+      state.following = id;
+      document.querySelectorAll('.suspect').forEach((row) =>
+        row.classList.toggle('following', row.dataset.id === id));
+      document.querySelectorAll('.lane').forEach((lane) =>
+        lane.classList.toggle('following', lane.dataset.lane === id));
+      for (const p of CASE.people) {
+        $(`pin-${p.id}`)?.classList.toggle('following', p.id === id);
+      }
+      $('hud-following').textContent = id ? personById(id).name.toUpperCase() : '—';
+      const followBtn = $('file-follow');
+      if (followBtn) {
+        followBtn.innerHTML = `<kbd>F</kbd>${followBtn.dataset.id === id ? 'Stop following' : 'Follow on map'}`;
+      }
+    }
+
+    function follow(id) {
+      setFollowing(state.following === id ? null : id);
+      if (state.following) map.setView(markers[id].getLatLng(), Math.max(map.getZoom(), FOLLOW_ZOOM));
+    }
+
+    function fitSuspects() {
+      setFollowing(null);
+      map.flyToBounds(L.latLngBounds(Object.values(markers).map((m) => m.getLatLng())), {
+        padding: [60, 60],
+        maxZoom: FOLLOW_ZOOM,
+        duration: 1,
+      });
+    }
+
+    function showTarget() {
+      const b = Object.values(CASE.buildings).find((b) => b.is_target);
+      setFollowing(null);
+      map.flyTo([b.lat, b.lon], FOLLOW_ZOOM, { duration: 1 });
+    }
+
+    function buildSuspects() {
+      const rows = CASE.people.map((p) => `
+        <div class="suspect" data-id="${escapeHtml(p.id)}">
+          <span class="cursor" aria-hidden="true">&#9654;</span>
+          <button class="suspect-main" data-follow="${escapeHtml(p.id)}" title="Follow ${escapeHtml(p.name)} on the map">
+            <span class="suspect-name">${swatch(p)} ${escapeHtml(p.name)}</span>
+            <span class="suspect-at" data-status="${escapeHtml(p.id)}"></span>
+          </button>
+          <span class="role-tag ${p.is_mastermind ? 'mm' : ''}">${p.is_mastermind ? 'MM' : `${flagsFor(p).length}F`}</span>
+          <button class="file-link" data-file="${escapeHtml(p.id)}" aria-label="${escapeHtml(p.name)}'s file">FILE</button>
+        </div>`).join('');
+      $('view-suspects').innerHTML = `
+        <div class="table-head label"><span></span><span>Name / location</span><span>Role</span><span></span></div>
+        ${rows}
+        <p class="hint">Click a name to follow them on the map. MM = mastermind, 3F = three rules broken.</p>`;
+    }
+
+    function renderFile() {
+      const p = personById(state.fileId);
+      if (!p) {
+        $('view-file').innerHTML = `
+          <div class="empty"><strong>No file open.</strong>Open one from the suspects list.</div>
+          <div class="btn-row"><button class="btn" data-file="${escapeHtml(CASE.people[0].id)}">Open first file</button></div>`;
+        return;
+      }
+      const index = CASE.people.indexOf(p);
+      const neighbour = (d) => CASE.people[(index + d + CASE.people.length) % CASE.people.length].id;
+      const jumpRow = (start, end, location, note, cls = '') => `
+        <button class="row-btn ${cls}" data-jump="${start}" data-location="${escapeHtml(location)}">
+          <span class="time">${formatTime(start)}&ndash;${formatTime(end)}</span>
+          <span>${escapeHtml(location)}${note ? `<span class="sub">${escapeHtml(note)}</span>` : ''}</span>
+          <span class="go">&rsaquo;</span>
+        </button>`;
+
+      $('view-file').innerHTML = `
+        <div class="file-head">
+          <div class="file-nav">
+            <span class="label">File ${index + 1}/${CASE.people.length} &middot; ${escapeHtml(p.id)}</span>
+            <span class="seg" role="group" aria-label="Other files">
+              <button data-file="${escapeHtml(neighbour(-1))}" aria-label="Previous file">&lsaquo;</button><button data-file="${escapeHtml(neighbour(1))}" aria-label="Next file">&rsaquo;</button>
+            </span>
+          </div>
+          <h2 class="file-name">${escapeHtml(p.name)}</h2>
+          <div class="file-meta">
+            <span class="badge ${p.is_mastermind ? 'mm' : ''}">${p.is_mastermind ? 'MASTERMIND' : 'CONSPIRATOR'}</span>
+            <span class="label">${escapeHtml(p.subject)}</span>
+          </div>
+          <div class="file-now"><span class="label">Now</span><span data-status="${escapeHtml(p.id)}"></span></div>
+        </div>
+
+        <h3 class="sect">Student record</h3>
+        <dl>
+          <div class="kv"><dt>Student ID</dt><dd>${escapeHtml(p.id)}</dd></div>
+          <div class="kv"><dt>Subject</dt><dd>${escapeHtml(p.subject)}</dd></div>
+          <div class="kv"><dt>Year</dt><dd>${p.year}</dd></div>
+          <div class="kv"><dt>Age / sex</dt><dd>${p.age} / ${escapeHtml(p.sex)}</dd></div>
+          <div class="kv"><dt>Height</dt><dd>${p.height} cm</dd></div>
+          <div class="kv"><dt>Hair colour</dt><dd>${swatch(p)} ${escapeHtml(p.color.toUpperCase())}</dd></div>
+        </dl>
+
+        <h3 class="sect">Societies</h3>
+        ${p.societies.length
+          ? p.societies.map((s) => `<div class="line-item"><span class="mark">&middot;</span><span>${escapeHtml(s)}</span></div>`).join('')
+          : '<p class="para">None</p>'}
+
+        <h3 class="sect">${p.is_mastermind ? 'Evidence' : `Rules broken (${p.evidence.length})`}</h3>
+        ${p.evidence.map((e) => `<div class="line-item ${p.is_mastermind ? '' : 'flag'}"><span class="mark">${p.is_mastermind ? '&middot;' : '!'}</span><span>${escapeHtml(e)}</span></div>`).join('')}
+
+        <h3 class="sect">${p.is_mastermind ? 'Meetings with conspirators' : 'Meetings with the mastermind'}</h3>
+        ${p.meetings.length
+          ? p.meetings.map((m) => jumpRow(m.start, m.end, m.location, `with ${m.with}`, 'meet')).join('')
+          : '<p class="para">None logged</p>'}
+
+        <h3 class="sect">Movements</h3>
+        ${p.visits.map((v) => jumpRow(v.start, v.end, v.location)).join('')}
+
+        <div class="btn-row"><button class="btn" id="file-follow" data-id="${escapeHtml(p.id)}"></button></div>
+        <p class="hint">Click a meeting or movement to replay it.</p>`;
+
+      $('file-follow').addEventListener('click', () => follow(p.id));
+      setFollowing(state.following);   // sets the follow button's label
+      updateMarkers();                 // fills in the live "Now" line
+    }
+
+    function buildCaseView() {
+      const mastermind = CASE.people.find((p) => p.is_mastermind);
+      const { students, conspirators } = CASE.stats;
+      const rules = [
+        "Attended their degree's mandatory lecture",
+        'Inside buildings only while they were open',
+        'Aged 18 or over in age-restricted venues',
+        'Never logged in two places at once',
+      ];
+      $('view-case').innerHTML = `
+        <h3 class="sect">Brief</h3>
+        <p class="para">Of <strong>${students}</strong> students, <strong>${conspirators}</strong> broke campus rules on the day.
+          ${mastermind
+            ? `<strong class="amber">${escapeHtml(mastermind.name)}</strong> broke none, yet met every one of them.`
+            : 'No one with a clean record met all of them.'}</p>
+        <p class="para">The replay rebuilds the day from the campus security logs.</p>
+
+        <h3 class="sect">Audit</h3>
+        <dl>
+          <div class="kv"><dt>Students checked</dt><dd class="num">${students}</dd></div>
+          <div class="kv"><dt>Broke a rule</dt><dd class="num red">${conspirators}</dd></div>
+          <div class="kv"><dt>Flags raised</dt><dd class="num red">${countOf(CASE.events, 'flag')}</dd></div>
+          <div class="kv"><dt>Meetings found</dt><dd class="num amber">${countOf(CASE.events, 'meeting')}</dd></div>
+        </dl>
+
+        <h3 class="sect">Rules checked</h3>
+        ${rules.map((r, i) => `<div class="line-item"><span class="mark">0${i + 1}</span><span>${r}</span></div>`).join('')}
+
+        ${mastermind ? `
+          <h3 class="sect">Mastermind</h3>
+          <button class="row-btn" data-file="${escapeHtml(mastermind.id)}">
+            <span class="time amber">${escapeHtml(mastermind.id)}</span>
+            <span>${escapeHtml(mastermind.name)}<span class="sub">Clean record, met all ${conspirators}</span></span>
+            <span class="go">&rsaquo;</span>
+          </button>` : ''}
+
+        <div class="btn-row"><button class="btn" id="btn-findings">Full case summary</button></div>
+
+        <h3 class="sect">Keys</h3>
+        <div class="kv"><dt><kbd>SPACE</kbd></dt><dd>Play / pause</dd></div>
+        <div class="kv"><dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Previous / next event</dd></div>
+        <div class="kv"><dt><kbd>1</kbd>&ndash;<kbd>4</kbd></dt><dd>Switch tab</dd></div>
+        <div class="kv"><dt><kbd>F</kbd></dt><dd>Follow the open file</dd></div>
+        <div class="kv"><dt><kbd>B</kbd> <kbd>A</kbd></dt><dd>Boyd Orr / fit all</dd></div>
+        <div class="kv"><dt><kbd>ESC</kbd></dt><dd>Stop following</dd></div>`;
+      $('btn-findings').addEventListener('click', () => $('findings').showModal());
+    }
+
+    function buildSummary() {
+      const mastermind = CASE.people.find((p) => p.is_mastermind);
+      const { students, conspirators } = CASE.stats;
+      $('findings-intro').textContent =
+        `Checking ${students} students against the lecture timetable, opening hours, age limits and ` +
+        `location clashes flagged ${conspirators}. ` +
+        (mastermind
+          ? `${mastermind.name} has a clean record but met every one of them during the day.`
+          : 'No clean student met all of them.');
+
+      $('findings-rows').innerHTML = CASE.people.map((p) => `
+        <tr>
+          <td>${swatch(p)} ${escapeHtml(p.name)}</td>
+          <td class="${p.is_mastermind ? 'amber' : 'red'}">${p.is_mastermind ? 'MASTERMIND' : 'CONSPIRATOR'}</td>
+          <td>${escapeHtml(p.subject)}</td>
+          <td>${p.age}</td>
+          <td class="evidence">${p.evidence.map((e) => `<div>${escapeHtml(e)}</div>`).join('')}</td>
+        </tr>`).join('');
+    }
+
+    // --------------------------------------------------------------- tabs
+
+    function setTab(tab) {
+      state.tab = tab;
+      document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${tab}`; });
+      document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', t.dataset.tab === tab));
+      $('left-body').scrollTop = 0;
+    }
+
+    function openFile(id) {
+      state.fileId = id;
+      renderFile();
+      setTab('file');
+    }
+
+    function setLayer(layer, on) {
+      if (layer === 'labels') $('map').classList.toggle('no-labels', !on);
+      if (layer === 'tags') $('map').classList.toggle('no-tags', !on);
+      if (layer === 'routes') (on ? routesLayer.addTo(map) : routesLayer.remove());
+      document.querySelectorAll(`[data-layer="${layer}"]`).forEach((b) =>
+        b.setAttribute('aria-pressed', (b.dataset.on === 'true') === on));
+    }
+
+    // --------------------------------------------------------------- init
+
+    setBasemap('dark');
+    buildSuspects();
+    buildCaseView();
+    buildSummary();
+    buildTimeline();
+    renderFile();
+    setTab(state.tab);
+    setSpeed(state.speed);
+    setPlaying(true);
+    setFollowing(null);
+    render();
+
+    $('btn-play').addEventListener('click', () => setPlaying(!state.playing));
+    $('btn-prev').addEventListener('click', () => stepEvent(-1));
+    $('btn-next').addEventListener('click', () => stepEvent(1));
+    $('btn-target').addEventListener('click', showTarget);
+    $('btn-fit').addEventListener('click', fitSuspects);
+    $('btn-unfollow').addEventListener('click', () => setFollowing(null));
+    document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
+    document.querySelectorAll('[data-basemap]').forEach((b) =>
+      b.addEventListener('click', () => setBasemap(b.dataset.basemap)));
+    document.querySelectorAll('[data-layer]').forEach((b) =>
+      b.addEventListener('click', () => setLayer(b.dataset.layer, b.dataset.on === 'true')));
+
+    // Rows in the left pane are re-rendered, so listen once on the pane.
+    $('left-body').addEventListener('click', (e) => {
+      const followBtn = e.target.closest('[data-follow]');
+      if (followBtn) follow(followBtn.dataset.follow);
+      const fileBtn = e.target.closest('[data-file]');
+      if (fileBtn) openFile(fileBtn.dataset.file);
+      const jumpBtn = e.target.closest('[data-jump]');
+      if (jumpBtn) jumpTo(Number(jumpBtn.dataset.jump), jumpBtn.dataset.location);
+    });
+
+    const TAB_KEYS = { 1: 'suspects', 2: 'file', 3: 'map', 4: 'case' };
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || $('findings').open) return;
+      const onScrubber = e.target === $('scrubber');
+      if (e.code === 'Space' && (e.target === document.body || onScrubber)) {
+        e.preventDefault();
+        setPlaying(!state.playing);
+      } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onScrubber) {
+        e.preventDefault();
+        stepEvent(e.key === 'ArrowRight' ? 1 : -1);
+      } else if (TAB_KEYS[e.key]) {
+        setTab(TAB_KEYS[e.key]);
+      } else if (e.key === 'f' || e.key === 'F') {
+        if (state.fileId) follow(state.fileId);
+      } else if (e.key === 'b' || e.key === 'B') {
+        showTarget();
+      } else if (e.key === 'a' || e.key === 'A') {
+        fitSuspects();
+      } else if (e.key === 'Escape') {
+        setFollowing(null);
+      }
+    });
+
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
+
+
